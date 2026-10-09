@@ -24,18 +24,20 @@ validating admission (validate in-flight, persist only on allow) + POSIX atomic-
   exactly-once); on startup sweep orphan .tmp. On a crash, unprocessed intents stay in the durable queue
   and are retried next time; in the extreme of never running → zero land (fail-safe).
 
-ponytail: a single synchronous process already satisfies "serial single writer"; cross-process locking see mng open. LED watermark still pends true values from CAP; the create anchor reads the layer request counter at land time (probation is fiction without a true anchor). Whole-run clear, the tiny crash window (between land and clear) may re-append the LED — per-item idempotent watermark pending the intent-queue granularity being finalized (validate-store open).
+ponytail: one drain per project root is now serialized through lib.lock (see drain). LED watermark still pends true values from CAP; the create anchor reads the layer request counter at land time (probation is fiction without a true anchor). Whole-run clear, the tiny crash window (between land and clear) may re-append the LED — per-item idempotent watermark pending the intent-queue granularity being finalized (validate-store open).
 """
 import hashlib
 import json
 import re
 
+from autoharness import config
 from autoharness.lib import (
     atomic,
     counters,
     intent_queue,
     layer,
     ledger,
+    lock,
     notify,
     redact,
     sidecar,
@@ -154,6 +156,9 @@ def promote(intent, *, roots=None, repo_name=None):
         return _reject(action, None, [("routing", str(exc))])
     if level not in layer.LAYERS:
         return _reject(action, level, [("routing", f"unresolved/illegal level: {level!r}")])
+    if level == layer.GLOBAL and config.DISABLE_GLOBAL:
+        return _reject(action, level,
+                       [("routing", "global layer is disabled by AUTOHARNESS_DISABLE_GLOBAL")])
 
     root = roots.get(level)
     try:
@@ -206,7 +211,7 @@ def _notes(action, body):
 def sweep(roots=None):
     roots = roots or {}
     removed = []
-    for lyr in layer.LAYERS:
+    for lyr in config.active_layers():
         removed += skill_store.sweep_orphans(lyr, roots.get(lyr))
     return removed
 
@@ -237,25 +242,35 @@ def _account(run_id, intents, verdicts, proot):
 
 
 def _drain_run(run_id, *, roots, repo_name, proot):
+    """Land one run's queued intents: read, promote, account, clear. Notification is the
+    caller's job, so a fire-and-forget send never holds the drain lock."""
     intents = intent_queue.read(run_id, proot)
     verdicts = [promote(i, roots=roots, repo_name=repo_name) for i in intents]
     record = _account(run_id, intents, verdicts, proot) if intents else None
     intent_queue.clear(run_id, proot)
-    if record:
-        # after clear, not inside _account: an external process in the land→clear window would
-        # widen the crash window where a whole run replays (duplicate LED, re-rejected creates)
-        notify.send(record)
-    return verdicts
+    return verdicts, record
 
 
 def drain(run_id, *, roots=None, repo_name=None):
     roots = roots or {}
-    sweep(roots)
     proot = roots.get(layer.PROJECT)
-    # the queue is per-run, so a child that exits before its drain leaves its intents in the
-    # directory for good; land them here under the dead run's own id, which is the at-least-once
-    # recovery the module docstring promises (atomic land makes the replay idempotent)
-    for orphan in intent_queue.orphans(proot):
-        if orphan != run_id:
-            _drain_run(orphan, roots=roots, repo_name=repo_name, proot=proot)
-    return _drain_run(run_id, roots=roots, repo_name=repo_name, proot=proot)
+    # One drain per project root at a time. A hook is a short-lived process, so two passes on the same
+    # state dir (parallel worktrees remapped to one root, or a killed session leaving a detached
+    # promotion running) interleave at the file level: each reads the library without seeing the
+    # other's skill, and each lands. Held across read→land→clear, which also closes the crash window
+    # the account comment below used to leave open to an external writer.
+    with lock.file_lock(layer.state_dir(layer.PROJECT, proot) / "drain.lock"):
+        sweep(roots)
+        # the queue is per-run, so a child that exits before its drain leaves its intents in the
+        # directory for good; land them here under the dead run's own id, which is the at-least-once
+        # recovery the module docstring promises (atomic land makes the replay idempotent)
+        landed = [_drain_run(orphan, roots=roots, repo_name=repo_name, proot=proot)
+                  for orphan in intent_queue.orphans(proot) if orphan != run_id]
+        verdicts, record = _drain_run(run_id, roots=roots, repo_name=repo_name, proot=proot)
+        landed.append((verdicts, record))
+    # after clear and outside the lock: the notification is fire-and-forget and must not hold
+    # the next pass out of the state dir
+    for _, rec in landed:
+        if rec:
+            notify.send(rec)
+    return verdicts

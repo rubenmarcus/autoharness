@@ -65,3 +65,14 @@ def redact(text, rules_path=None):
     for category, name, rx, validator in _rules(key):
         out = rx.sub(_replacer(category, name, validator), out)
     return out
+
+
+def secret_hits(text, rules_path=None):
+    """Names of the secret rules *text* matches — a gate, not a rewrite (PII stays redact-only)."""
+    key = str(rules_path) if rules_path else str(config.REDACTION_RULES)
+    return [
+        name
+        for category, name, rx, validator in _rules(key)
+        if category == "secret"
+        and any(validator is None or validator(match.group(0)) for match in rx.finditer(text))
+    ]

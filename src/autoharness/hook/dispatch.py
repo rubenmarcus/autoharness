@@ -75,7 +75,7 @@ def _curate_run_id(event, pcount):
 
 def _is_reflector(event):
     at = str(event.get("agent_type") or "")
-    return at == config.REFLECTOR_AGENT or at.endswith("reflector")
+    return at == config.REFLECTOR_AGENT or at.endswith(":reflector")
 
 
 def _detached_launch(transcript_path, session_id, run_id, roots):
@@ -120,7 +120,8 @@ def dispatch(event, *, roots=None, reflect=None, consolidate=None):
         if name == "Stop":
             if os.environ.get(config.CHILD_SESSION_ENV):
                 return {"handled": name, "result": {"triggered": False, "reason": "recursion_guard"}}
-            counters.bump_request(layer.GLOBAL, roots.get(layer.GLOBAL))  # MNG denominator (per turn)
+            if not config.DISABLE_GLOBAL:
+                counters.bump_request(layer.GLOBAL, roots.get(layer.GLOBAL))  # MNG denominator (per turn)
             pcount = counters.bump_request(layer.PROJECT, proot)
             promoter.drain(config.INTERACTIVE_RUN_ID, roots=roots)  # /learn and other in-session proposals; no-op when empty
             result = on_stop.on_stop(event, root=proot)

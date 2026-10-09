@@ -57,8 +57,8 @@ form. Always install as a plugin to match both names.
 
 ### Update
 
-Update from a terminal — refresh the catalog, then update with the **full `plugin@marketplace`
-id**, then restart:
+Update from a terminal — refresh the catalog by marketplace name, then update the plugin by its
+**full `plugin@marketplace` id**, then restart:
 
 ```
 claude plugin marketplace update autoharness       
@@ -92,6 +92,12 @@ never touched.
 
 Every knob is an `AUTOHARNESS_*` environment variable with a built-in default — nothing to
 configure unless you want to change the pace.
+
+**Placement — which layers it manages**
+
+| Variable | Default | What it does |
+|---|---|---|
+| `AUTOHARNESS_DISABLE_GLOBAL` | `0` | Set to `1` for a project-only deployment. Global create intents are rejected before staging and landing; global request/use/view counters, archiving, orphan sweeps, recall, curator snapshots, and metrics are skipped. Existing global skills stay untouched. Project-layer learning continues normally. |
 
 **Cadence — when it learns**
 
