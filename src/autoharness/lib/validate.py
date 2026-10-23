@@ -109,6 +109,8 @@ def _frontmatter(body):
         s = line.strip()
         if not s or s.startswith("#") or ":" not in line:
             continue
+        if line[0] in " \t":
+            continue  # nested mapping or wrapped scalar line: not a top-level field of the skill
         key, value = line.split(":", 1)
         v = value.strip()
         if re.fullmatch(r"[>|](?:[1-9][-+]?|[-+][1-9]?)?(?:[ \t]+#.*)?", v):
@@ -257,12 +259,16 @@ def _structure(body, base_dir, files=None):
                     ast.parse(f.read_text())
                 except SyntaxError as exc:
                     findings.append(("structure", f"referenced {ref} has syntax error: {exc}"))
+                except UnicodeError as exc:
+                    findings.append(("structure", f"referenced {ref} could not be read: {exc}"))
         for ref in subfile_references(body, base_dir=base_dir, files=files):
             if ref not in (files or {}) and not (base_dir / ref).is_file():
                 findings.append(("structure", f"referenced {ref} neither carried in intent nor live"))
     for rel in files or {}:
-        if isinstance(rel, str) and rel not in body:
-            findings.append(("structure", f"carried subfile {rel} not referenced in SKILL.md body"))
+        if isinstance(rel, str):
+            pointer = re.compile(r"(?<![A-Za-z0-9_./-])(?:\./|\$\{CLAUDE_SKILL_DIR\}/)?" + re.escape(rel) + r"(?![A-Za-z0-9_/-])(?!\.[A-Za-z0-9_])")
+            if not pointer.search(body):
+                findings.append(("structure", f"carried subfile {rel} not referenced in SKILL.md body"))
     return findings
 
 
