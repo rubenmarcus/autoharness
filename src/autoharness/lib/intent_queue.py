@@ -10,7 +10,7 @@ import json
 import os
 import re
 
-from autoharness.lib import layer, lock
+from autoharness.lib import atomic, layer, lock
 
 _SAFE_RUN = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -79,6 +79,26 @@ def drop(run_id, root=None):
     """Discard the claimed batch once every intent in it landed and was accounted."""
     claimed = _claim_path(run_id, root)
     if claimed.exists():
+        claimed.unlink()
+
+
+def release(run_id, root=None):
+    """Return a claimed batch to the queue so the next drain retries it.
+
+    A drain that raises mid-batch landed nothing it could account for, so the claim goes back
+    under the append lock, ahead of whatever was appended while it ran, and read() sees the
+    intents again. A drain killed outright cannot run this, and its claim is recovered by the
+    orphans scan instead.
+    """
+    p = _path(run_id, root)
+    claimed = _claim_path(run_id, root)
+    with lock.file_lock(p.with_suffix(p.suffix + ".lock")):
+        if not claimed.exists():
+            return
+        lines = claimed.read_text(encoding="utf-8").splitlines()
+        if p.exists():
+            lines += p.read_text(encoding="utf-8").splitlines()
+        atomic.write_text(p, "".join(line + "\n" for line in lines if line.strip()))
         claimed.unlink()
 
 

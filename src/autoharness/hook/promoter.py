@@ -267,10 +267,16 @@ def _account(run_id, intents, verdicts, proot):
 
 def _drain_run(run_id, *, roots, repo_name, proot):
     """Land one run's queued intents: take (atomic claim), promote, account, drop. Notification
-    is the caller's job, so a fire-and-forget send never holds the drain lock."""
+    is the caller's job, so a fire-and-forget send never holds the drain lock. A promotion that
+    raises (a transient read failure on a referenced file, say) puts the whole batch back in the
+    queue, so the next drain retries it instead of waiting for the orphans scan."""
     intents = intent_queue.take(run_id, proot)
-    verdicts = [promote(i, roots=roots, repo_name=repo_name) for i in intents]
-    record = _account(run_id, intents, verdicts, proot) if intents else None
+    try:
+        verdicts = [promote(i, roots=roots, repo_name=repo_name) for i in intents]
+        record = _account(run_id, intents, verdicts, proot) if intents else None
+    except BaseException:
+        intent_queue.release(run_id, proot)
+        raise
     intent_queue.drop(run_id, proot)
     return verdicts, record
 
